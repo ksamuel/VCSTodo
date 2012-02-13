@@ -22,9 +22,7 @@ The main benefit of vcstodo compared to the other projects:
 Setup
 ======
 
-There is no pypi entry, but you can install it doing:
-
-pip install git+git://repo
+pip install vcstodo
 
 Usage
 ======
