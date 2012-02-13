@@ -11,11 +11,9 @@ import re
 import operator
 import tempfile
 
-from clize import clize, run
+from vcstodo.libs.clize import clize, run
 
-import config
-
-ROOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)))
+from vcstodo.libs import config
 
 
 class Config(config.Config):
@@ -34,7 +32,7 @@ def get_todo_dir(name='TASKS'):
     """
 
     oldbasedir = None
-    basedir = ROOT_DIR
+    basedir = os.getcwdu()
 
     while oldbasedir != basedir:
 
@@ -322,10 +320,11 @@ def init(projectname=None, username=None, useremail=None):
     username = username or raw_input(u"Your name in this project:")
     useremail = useremail or raw_input(u"Your email in this project:")
 
-    os.makedirs(os.path.join(ROOT_DIR, u'TASKS/todo'))
-    os.makedirs(os.path.join(ROOT_DIR, u'TASKS/done'))
+    curdir = os.getcwdu()
+    os.makedirs(os.path.join(curdir, u'TASKS/todo'))
+    os.makedirs(os.path.join(curdir, u'TASKS/done'))
 
-    config_file_path = os.path.join(ROOT_DIR, u'TASKS/', '.config')
+    config_file_path = os.path.join(curdir, u'TASKS/', '.config')
 
     conf = Config(projectname=projectname,
                   username=username,
@@ -451,7 +450,9 @@ def lst(limit='0', orderby='created', withtags='', status='todo'):
 
 if __name__ == '__main__':
 
-    args = sys.argv
+    if not get_todo_dir() and 'init' not in sys.argv:
+        sys.exit("No task directory found. Use 'tdo init'")
+
     if not set(sys.argv) & set(('init', 'add', 'lst', 'check', 'uncheck', '--help')):
         sys.argv.insert(1, 'lst')
 
