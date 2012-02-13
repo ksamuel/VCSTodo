@@ -21,11 +21,11 @@ ROOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)))
 class Config(config.Config):
 
     def get_config_file_path(self):
-        return todo_path('config')
+        return todo_path('.config')
 
 
 
-def get_todo_dir(name='.tdo'):
+def get_todo_dir(name='TASKS'):
     """
         Return the path to the closest .todo dir: in the current directory
         or any parent.
@@ -49,7 +49,7 @@ def get_todo_dir(name='.tdo'):
 
 def todo_path(*path):
     """
-        Turn a relative path in the .tdo dir, into an absolute path.
+        Turn a relative path in the TASKS dir, into an absolute path.
     """
     return os.path.join(get_todo_dir(), *path)
 
@@ -150,7 +150,7 @@ class Task(object):
         task = cls(task_file, **default)
         with open(task_file) as f:
 
-            task.status = 'todo' if '.tdo/todo' in f.name else 'done'
+            task.status = 'todo' if 'TASKS/todo' in f.name else 'done'
 
             for line in f:
                 line = line.strip()
@@ -314,7 +314,7 @@ def init(projectname=None, username=None, useremail=None):
     tododir = get_todo_dir()
     if tododir is not None:
         sys.exit(u"Cannot create a project here, this directory or a parent"
-                 u" already contains a .tdo directory: %s" % tododir)
+                 u" already contains a TASKS directory: %s" % tododir)
 
     print u"Just press enter to skip a question:"
 
@@ -322,16 +322,17 @@ def init(projectname=None, username=None, useremail=None):
     username = username or raw_input(u"Your name in this project:")
     useremail = useremail or raw_input(u"Your email in this project:")
 
-    os.makedirs(os.path.join(ROOT_DIR, u'.tdo/todo'))
-    os.makedirs(os.path.join(ROOT_DIR, u'.tdo/done'))
+    os.makedirs(os.path.join(ROOT_DIR, u'TASKS/todo'))
+    os.makedirs(os.path.join(ROOT_DIR, u'TASKS/done'))
 
-    config_file_path = os.path.join(ROOT_DIR, u'.tdo/', 'config')
+    config_file_path = os.path.join(ROOT_DIR, u'TASKS/', '.config')
 
-    print "Make sure this file is ignored by your VCS: %s" % config_file_path
+    conf = Config(projectname=projectname,
+                  username=username,
+                  useremail=useremail)
+    conf.save()
 
-    Config(projectname=projectname,
-           username=username,
-           useremail=useremail).save()
+    print "Make sure this file is ignored by your VCS: %s" % conf.get_config_file_path()
 
 
 # todo: add a due parameter
