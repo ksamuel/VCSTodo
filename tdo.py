@@ -1,0 +1,457 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# vim: ai ts=4 sts=4 et sw=4 nu
+
+import os
+import sys
+import json
+import datetime
+import glob
+import re
+import operator
+import tempfile
+
+from clize import clize, run
+
+import config
+
+ROOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)))
+
+
+class Config(config.Config):
+
+    def get_config_file_path(self):
+        return todo_path('config')
+
+
+
+def get_todo_dir(name='.tdo'):
+    """
+        Return the path to the closest .todo dir: in the current directory
+        or any parent.
+
+        If it can't find any .todo dir, return None.
+    """
+
+    oldbasedir = None
+    basedir = ROOT_DIR
+
+    while oldbasedir != basedir:
+
+        todo_dir = os.path.join(basedir, name)
+
+        if os.path.isdir(todo_dir):
+            return todo_dir
+
+        oldbasedir = basedir
+        basedir = os.path.dirname(oldbasedir)
+
+
+def todo_path(*path):
+    """
+        Turn a relative path in the .tdo dir, into an absolute path.
+    """
+    return os.path.join(get_todo_dir(), *path)
+
+
+class Task(object):
+
+    file = None
+    author = None
+    tags = None
+    status = None
+    index = None
+    title = None
+    content = None
+    comments = None
+    created = None
+    modified = None
+
+    METADATA_PATTERN = re.compile(ur'^(?P<name>tags|by):(?P<value>.*)$',
+                                  flags=re.IGNORECASE)
+
+    def __init__(self, file, title='', content='', author='',
+                 tags=set(), status='todo', index=None, comments=[]):
+
+        self.file = file
+        self.author = author
+        self.tags = tags
+        self.status = status
+        self.title = title
+        self.content = content
+        self.comments = comments
+
+        self.created = self.get_modification_time(self.file)
+        self.modified = self.get_creation_time(self.file)
+        self.index = index or self.get_index()
+
+
+    @classmethod
+    def get_modification_time(cls, path):
+        """
+            Return a datetime object of the date and time of the last
+            modification for the given file
+        """
+        last_modif = os.path.getmtime(path)
+        return datetime.datetime.fromtimestamp(last_modif)
+
+
+    @classmethod
+    def get_creation_time(cls, path):
+        """
+            Return a datetime object of the date and time of the date of
+            the file creation, exctracted from it's name.
+        """
+        creation_date = os.path.basename(path)
+        return datetime.datetime.strptime(creation_date, '%Y-%m-%d_%H:%M:%S.%f')
+
+
+    @property
+    def filename(self):
+        return os.path.basename(self.file)
+
+
+    def get_index(self):
+        return TaskSet.list_task_files().index(self.file) + 1
+
+
+    def __unicode__(self):
+        return(u'#%(index)s - %(title)s ' % self.__dict__
+               + ' '.join('[%s]' % tag for tag in self.tags))
+
+
+    def __repr__(self):
+        if not self.title or self.index is None:
+            return u'<Task %s>' % self.filename
+        return u'<Task #%(index)s - %(title)s>' % {
+            'index': self.index,
+            'title': self.title[:10] + ('...' * (len(self.title) > 10))
+        }
+
+    @classmethod
+    def tags_as_set(self, tags_string):
+        """
+            Take string formated as a coma sperated list of words and return
+            a set. Each word is stripped and lowercased.
+        """
+        if tags_string:
+            tags = (t.strip().lower() for t in tags_string.split(','))
+            return set(tag for tag in tags if tag)
+
+        return set()
+
+
+    @classmethod
+    def from_file(cls, task_file, default={}, metadata_only=False):
+        """
+            Create a task object from a file
+        """
+
+        task = cls(task_file, **default)
+        with open(task_file) as f:
+
+            task.status = 'todo' if '.tdo/todo' in f.name else 'done'
+
+            for line in f:
+                line = line.strip()
+
+                if line:
+                    meta = cls.METADATA_PATTERN.match(line)
+                    if meta:
+                        meta = meta.groupdict()
+                        if meta['name'] == 'by':
+                            task.author = meta['value']
+                        if meta['name'] == 'tags':
+                            task.tags = task.tags_as_set(meta['value'])
+                    else:
+                        task.title = line
+                        if metadata_only:
+                            break
+        return task
+
+
+    @classmethod
+    def from_number(cls, number, metadata_only=False):
+        """
+            Fecth and build a task object from a file given the file index
+        """
+
+        try:
+            return cls.from_file(TaskSet.list_task_files()[number - 1],
+                                 metadata_only=metadata_only)
+        except IndexError:
+            raise ValueError('No task with number %s' % number)
+
+
+    @classmethod
+    def from_filename(cls, filename, metadata_only=False):
+        """
+            Fecth and build a task object from a file given the file name
+        """
+
+        try:
+            return cls.from_file(todo_path('todo', filename),
+                                 metadata_only=metadata_only)
+        except IOError:
+            try:
+                return cls.from_file(todo_path('done', filename),
+                                     metadata_only=metadata_only)
+            except IOError:
+                raise ValueError('No task with filename %s' % filename)
+
+
+    def change_status(self, status):
+        """
+            Change the task status.
+        """
+        assert status in ('todo', 'done')
+        if self.status != status:
+            oldfilename = self.file
+            self.file = newfilename = self.file.replace('/' + self.status,
+                                                        '/' + status)
+            os.rename(oldfilename, self.file)
+            self.index = self.get_index()
+
+
+class TaskSet(object):
+    """
+        A container with filtering capabilities
+    """
+
+    def __init__(self, tasks=()):
+        self.tasks = tasks
+
+
+    def __iter__(self):
+        return iter(self.tasks)
+
+
+    def load(self):
+        """
+            Load all the tasks, applying all the filters.
+
+            Use this when you want to freeze the results of several
+            filtering, and then reapply filtering on the result several
+            times without redoing it.
+        """
+        self.tasks = tuple(self.tasks)
+        return self
+
+
+    @classmethod
+    def list_task_files(cls):
+        return glob.glob(todo_path(u'done/*')) + glob.glob(todo_path(u'todo/*'))
+
+
+
+    @classmethod
+    def from_files(cls, task_files=None, metadata_only=False):
+        """
+            Wrap _load_metadata result into a task set
+        """
+        return cls(cls._from_files(task_files, metadata_only=metadata_only))
+
+
+    @classmethod
+    def _from_files(cls, task_files=None, metadata_only=False):
+        """
+            Returns a generators loading all the task from the task_files
+        """
+        task_files = task_files if task_files is not None else cls.list_task_files()
+        for i, tf in enumerate(task_files, start=1):
+            try:
+                yield Task.from_file(tf, {'index':i},
+                                     metadata_only=metadata_only)
+            except ValueError:
+                pass
+
+
+    def with_status(self, status):
+        """
+            Filter the current taskset with tasks matching this status
+        """
+        return TaskSet(task for task in self.tasks if task.status == status)
+
+
+    def with_tags(self, tags):
+        """
+            Filter the current taskset with tasks matching this tag
+        """
+        assert tags
+        return TaskSet(task for task in self.tasks if task.tags.intersection(tags))
+
+
+    def order_by(self, field):
+        """
+            Order the current taskset by the given field.
+            Should be applied before 'limit' if you think about using 'limit'
+        """
+        reverse = field.endswith('-')
+        if reverse:
+            field = field[:-1]
+
+        return TaskSet(sorted(self.tasks,
+                        key=operator.attrgetter(field),
+                        reverse=reverse))
+
+
+    def limit(self, limit):
+        """
+            Limit the current taskset to a number of entries
+        """
+        if limit > 0:
+            return TaskSet(itertools.islice(self.tasks, limit))
+        return self
+
+
+
+@clize
+def init(projectname=None, username=None, useremail=None):
+    """
+        Create a project in the current directory.
+    """
+
+    tododir = get_todo_dir()
+    if tododir is not None:
+        sys.exit(u"Cannot create a project here, this directory or a parent"
+                 u" already contains a .tdo directory: %s" % tododir)
+
+    print u"Just press enter to skip a question:"
+
+    projectname = projectname or raw_input(u"Name of this project:")
+    username = username or raw_input(u"Your name in this project:")
+    useremail = useremail or raw_input(u"Your email in this project:")
+
+    os.makedirs(os.path.join(ROOT_DIR, u'.tdo/todo'))
+    os.makedirs(os.path.join(ROOT_DIR, u'.tdo/done'))
+
+    config_file_path = os.path.join(ROOT_DIR, u'.tdo/', 'config')
+
+    print "Make sure this file is ignored by your VCS: %s" % config_file_path
+
+    Config(projectname=projectname,
+           username=username,
+           useremail=useremail).save()
+
+
+# todo: add a due parameter
+# todo: add a --edit flag to open the file after adding the task
+# using the default editor
+# possible solution: http://stackoverflow.com/questions/1442841/lauch-default-editor-like-webbrowser-module
+# http://stackoverflow.com/questions/434597/open-document-with-default-application-in-python
+
+@clize
+def add(text, tags=''):
+    """
+        Add a task.
+    """
+
+    filename = unicode(datetime.datetime.now()).replace(' ', '_')
+
+    with open(todo_path(u'todo/%s' % filename), 'w') as f, Config() as conf:
+
+        author = conf.username
+        if author:
+            f.write('by: %s\n' % author)
+
+        if tags:
+            f.write('tags: %s\n\n' % tags)
+
+        f.write(text)
+
+
+@clize
+def check(number):
+    """
+        Set a task as done.
+    """
+    try:
+        task = Task.from_number(int(number), True)
+    except ValueError:
+        try:
+           task = Task.from_filename(int(number), True)
+        except ValueError:
+            print u"No task '%s'" % number
+
+    if task.status == 'done':
+        print u"This task is already DONE"
+    else:
+        task.change_status('done')
+        print u"DONE: "
+        print u"\t" + unicode(task)
+
+
+@clize
+def uncheck(number):
+    """
+        Set a task as todo.
+    """
+    try:
+        task = Task.from_number(int(number), True)
+    except ValueError:
+        try:
+           task = Task.from_filename(int(number), True)
+        except ValueError:
+            print u"No task '%s'" % number
+
+    if task.status == 'todo':
+        print u"This task is already TO DO"
+    else:
+        task.change_status('todo')
+        print u"TODO: "
+        print u"\t" + unicode(task)
+
+
+# todo: add a due filter for orderby
+# todo: allow to see tasks from any status together
+
+@clize
+def lst(limit='0', orderby='created', withtags='', status='todo'):
+    """
+        List tasks.
+    """
+
+    if status not in ('todo', 'done', 'all'):
+        status = 'todo'
+
+    orderby = orderby if orderby in ('creation', 'modification') else 'creation'
+    limit = int(limit) if limit.isdigit() else 0
+    withtags = Task.tags_as_set(withtags)
+
+    tasks = TaskSet.from_files(metadata_only=True)
+
+    if status != 'all':
+        tasks = tasks.with_status(status)
+
+    if withtags:
+        tasks = tasks.with_tags(withtags)
+
+    if hasattr(Task, orderby[:-1] if orderby.endswith('-') else orderby):
+        tasks.order_by(orderby)
+
+    task = tasks.load().limit(limit)
+
+    if status == 'all':
+
+        print u'TODO:'
+        for task in tasks.with_status('todo'):
+            print u'\t' + unicode(task)
+        print
+        print u'DONE:'
+        for task in tasks.with_status('done'):
+            print u'\t' + unicode(task)
+
+    else:
+        print u'%s:' % status.upper()
+        for task in tasks:
+            print u'\t' + unicode(task)
+
+
+
+if __name__ == '__main__':
+
+    args = sys.argv
+    if not set(sys.argv) & set(('init', 'add', 'lst', 'check', 'uncheck', '--help')):
+        sys.argv.insert(1, 'lst')
+
+    run((init, add, lst, check, uncheck))
