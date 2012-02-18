@@ -11,10 +11,14 @@ import re
 import operator
 import tempfile
 
-from vcstodo.libs.clize import clize, run
-
-from vcstodo.libs import config
-
+try:
+    from vcstodo.libs.clize import clize, run
+    from vcstodo.libs import config
+except:
+    ROOT_dir = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, os.path.dirname(ROOT_dir))
+    from vcstodo.libs.clize import clize, run
+    from vcstodo.libs import config
 
 class Config(config.Config):
 
